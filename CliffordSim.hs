@@ -1,9 +1,9 @@
 module CliffordSim where
 import CnotCorrection
 import Control.Monad (foldM)
-import System.Posix (ProcessTimes(elapsedTime))
-import Data.Text.Internal.Builder.RealFloat.Functions (roundTo)
-import GHC.Float (roundFloat)
+-- import System.Posix (ProcessTimes(elapsedTime))
+-- import Data.Text.Internal.Builder.RealFloat.Functions (roundTo)
+-- import GHC.Float (roundFloat)
 
 
 type Qubit = Int
@@ -21,7 +21,9 @@ data PauliOp
 data CliffordSymbolic
   = H Qubit
   | S Qubit
+  | SDag Qubit
   | CX Qubit Qubit
+  | CZ Qubit Qubit
   deriving (Eq, Show)
 
 -- Nem-Clifford kapu: RZ
@@ -57,16 +59,79 @@ applyH q (P1 q' p)
         I -> P1 q I
 applyH _ op = op
 
+applyS1 :: Pauli -> Pauli
+applyS1 X = Y
+applyS1 Y = X   -- ignoring the -1 phase
+applyS1 Z = Z
+applyS1 I = I
+
+applyS :: Qubit -> PauliOp -> PauliOp
+
+-- Single-qubit Paulis
+applyS q (P1 q' p)
+    | q == q'   = P1 q (applyS1 p)
+    | otherwise = P1 q' p
+
+-- Two-qubit Paulis
+applyS q (P2 q1 q2 p1 p2)
+    | q == q1 && q == q2 =
+        P2 q1 q2 (applyS1 p1) (applyS1 p2)
+    | q == q1 =
+        P2 q1 q2 (applyS1 p1) p2
+    | q == q2 =
+        P2 q1 q2 p1 (applyS1 p2)
+    | otherwise =
+        P2 q1 q2 p1 p2
+
+conjugateCX :: Pauli -> Pauli -> (Pauli, Pauli)
+conjugateCX p_c p_t = case (p_c, p_t) of
+    (I, I) -> (I, I)
+    (I, X) -> (I, X)
+    (I, Y) -> (Z, Y)
+    (I, Z) -> (Z, Z)
+    (X, I) -> (X, X)
+    (X, X) -> (X, I)
+    (X, Y) -> (Y, Z)
+    (X, Z) -> (Y, Y)
+    (Y, I) -> (Y, X)
+    (Y, X) -> (Y, I)
+    (Y, Y) -> (X, Z)
+    (Y, Z) -> (X, Y)
+    (Z, I) -> (Z, I)
+    (Z, X) -> (Z, X)
+    (Z, Y) -> (I, Y)
+    (Z, Z) -> (I, Z)
+
 -- CNOT
 applyCX :: Qubit -> Qubit -> PauliOp -> PauliOp
-applyCX c t (P1 q Z)
-  | q == t = P2 c t Z Z
-applyCX _ _ op = op
+applyCX c t p =
+  case p of
+    P1 q pauli
+      | q == c ->
+          case pauli of
+            X -> P2 c t X X
+            Z -> P1 c Z
+            Y -> P2 c t Y X
+            I -> P1 q I
+      | q == t ->
+          case pauli of
+            X -> P1 t X
+            Z -> P2 c t Z Z
+            Y -> P2 c t Z Y
+            I -> P1 q I
+      | otherwise -> p
+
+    P2 q0 q1 p0 p1
+      | q0 == c && q1 == t ->
+          let (p0', p1') = conjugateCX p0 p1
+          in P2 q0 q1 p0' p1'
+    _ -> p
 
 
 -- update current step with C or N
 updateFrame :: CliffordSymbolic -> Frame -> Frame
 updateFrame (H q) f  = \p -> applyH q (f p)   
+updateFrame (S q) f  = \p -> applyS q (f p)   
 updateFrame (CX c t) f = \p -> applyCX c t (f p)    
 updateFrame _ f = f
 
@@ -246,7 +311,7 @@ main = do
   ---putStrLn "Starting Clifford frame simulation"
   ---putStrLn "Initial state: 3 qubits |000>"
 
-  finalState <- run 2 exampleWithCX
+  finalState <- run 2 exampleHard
 
   putStrLn "\nPhysical non-Clifford gates applied:"
   mapM_ print (applied finalState)
